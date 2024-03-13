@@ -3,7 +3,9 @@ using DifferentialEquations
 using PowerDynamics
 using FFTW
 using LinearAlgebra
-import PlotlyJS: plot
+using PlotlyJS
+using DataFrames
+using Polynomials
 
 function getStateIndex(pg::PowerGrid,node_str::String,sym::Symbol)
     ind = 0
@@ -118,19 +120,24 @@ function PiModel(y, y_shunt_km, y_shunt_mk, t_km::Num, t_mk)
     Π
 end
 
-function CalcEigenValues(pg::PowerGrid, p; output::Bool = false, plot::Bool = false)
-  mtsys = GetMTKSystem(pg, (0.0, 1.0), p)
+function CalcEigenValues(pg::PowerGrid, p)
+    mtsys = GetMTKSystem(pg, (0.0, 1.0), p)
+    CalcEigenValues(mtsys)
+end
+
+function CalcEigenValues(mtsys::ODESystem; output::Bool = false, plot::Bool = false)
   Fx, Fy, Gx, Gy = GetSymbolicFactorizedJacobian(mtsys)
   Fxf, Fyf, Gxf, Gyf = [
-    Substitute(f, mtsys.defaults) for
+    substitute(f, mtsys.defaults,fold=true) for
     f in [Fx, Fy, Gx, Gy]
   ]
   Af = Fxf - Fyf * inv(Gyf) * Gxf
-  EW = eigvals(Af)
+  Af = substitute.(Symbolics.value.(Af),([],)) # um alle Ausdrücke innerhalb der Matrix einmal auszuwerten!
+  EW = eigvals(Symbolics.value.(Af))
 
-  x,y = GetSymbolicStates(mtsys)
+  eqs,aeqs,x,y = GetSymbolicEquationsAndStates(mtsys)
   index = indexin(x, states(mtsys))
-  syms = rhs(pg).syms[index]
+  syms = states(mtsys)[index]
   if output
     display("|ID | Real-part | Imag-part | Frequency | Damping Time Constant |")
     for (ind, ew) in enumerate(EW)
@@ -140,18 +147,18 @@ function CalcEigenValues(pg::PowerGrid, p; output::Bool = false, plot::Bool = fa
     end
   end
   if plot
-      scatter([real(EW)[1]],[imag(EW)[1]], legend = :outertopright,label = String(syms[1]))
+      Plots.scatter([real(EW)[1]],[imag(EW)[1]], legend = :outertopright) #,label = String(syms[1])
       for i in 2:length(EW)
-          scatter!([real(EW)[i]],[imag(EW)[i]],label = String(syms[i]))
+         Plots.scatter!([real(EW)[i]],[imag(EW)[i]]) #,label = String(syms[i])
       end
       ylims!((-maximum(imag.(EW))*1.1,maximum(imag.(EW))*1.1))
       min_real_ew = minimum(real.(EW))
-      plot!([min_real_ew;0.0],[min_real_ew*20.0;0.0], linestyle=:dash,linecolor = :red, label = "5 % damping")
-      plot!([min_real_ew;0.0],[-min_real_ew*20.0;0.0], linestyle=:dash,linecolor = :red, label = nothing)
-      plot!([min_real_ew;0.0],[min_real_ew*10.0;0.0], linestyle=:dash,linecolor = :blue, label = "10 % damping")
-      plot!([min_real_ew;0.0],[-min_real_ew*10.0;0.0], linestyle=:dash,linecolor = :blue, label = nothing)
-      plot!([min_real_ew;0.0],[min_real_ew*5.0;0.0], linestyle=:dash,linecolor = :green, label = "20 % damping")
-      display(plot!([min_real_ew;0.0],[-min_real_ew*5.0;0.0], linestyle=:dash,linecolor = :green, label = nothing));
+      Plots.plot!([min_real_ew;0.0],[min_real_ew*20.0;0.0], linestyle=:dash,linecolor = :red, label = "5 % damping")
+      Plots.plot!([min_real_ew;0.0],[-min_real_ew*20.0;0.0], linestyle=:dash,linecolor = :red, label = nothing)
+      Plots.plot!([min_real_ew;0.0],[min_real_ew*10.0;0.0], linestyle=:dash,linecolor = :blue, label = "10 % damping")
+      Plots.plot!([min_real_ew;0.0],[-min_real_ew*10.0;0.0], linestyle=:dash,linecolor = :blue, label = nothing)
+      Plots.plot!([min_real_ew;0.0],[min_real_ew*5.0;0.0], linestyle=:dash,linecolor = :green, label = "20 % damping")
+      display(Plots.plot!([min_real_ew;0.0],[-min_real_ew*5.0;0.0], linestyle=:dash,linecolor = :green, label = nothing));
   end
   return EW
 end
@@ -346,15 +353,27 @@ function Sol2DF(pgsol::PowerGridSolution)
     return sol
 end
 
+function Sol2DFonlyVoltages(pgsol::PowerGridSolution)
+    sol = DataFrame()
+
+    for (ind,val) in enumerate(pgsol.powergrid.nodes)
+        ur = ExtractResult(pgsol,Symbol("u_r_"*string(ind)))
+        ui = ExtractResult(pgsol,Symbol("u_i_"*string(ind)))
+        u = sqrt.(ur.^2 + ui.^2)
+        sol[!,Symbol("uabs_"*string(ind))] = u;
+    end
+    sol[!,Symbol("time")] = pgsol.dqsol.t;
+    return sol
+end
 
 function plotallvoltages(pgsol::PowerGridSolution)
     newdf = Sol2DF(pgsol)
     p = Vector{GenericTrace}()
     for (ind,val) in enumerate(pgsol.powergrid.nodes)
-        tmp = scatter(x=newdf.timestamp,y=newdf[:,"uabs_"*string(ind)],name=val[1])
+        tmp = PlotlyJS.scatter(x=newdf.timestamp,y=newdf[:,"uabs_"*string(ind)],name=val[1])
         push!(p,tmp)
     end
-    display(plot(p))
+    display(PlotlyJS.plot(p))
     return p
 end
 
@@ -362,8 +381,8 @@ function myplot(pgsol::PowerGridSolution,sym::Symbol;y_norm=1.0,y_bias = 0.0)
     ind = findfirst(x->x==sym,collect(rhs(pgsol.powergrid).syms))
     t = pgsol.dqsol.t
     y =  pgsol.dqsol[ind,:]./y_norm .+ y_bias
-    sc = scatter(x=t,y=y,name=String(sym))
-    #display(plot(sc))
+    sc = PlotlyJS.scatter(x=t,y=y,name=String(sym))
+    display(PlotlyJS.plot(sc))
     return sc
 end
 
@@ -373,23 +392,40 @@ function myplot(pgsol::PowerGridSolution,bus::String,sym::Symbol;y_norm=1.0,y_bi
     myplot(pgsol,sym,y_norm=y_norm,y_bias=y_bias)
 end
 
+function myplot(pgsol::PowerGridSolution,bus::String,symv::Vector{Symbol};y_norm=1.0,y_bias = 0.0)
+    ind_bus = findfirst(x->x==bus,collect(keys(pgsol.powergrid.nodes)))
+    p = Vector{GenericTrace}()
+    for sym in symv
+        sym = Symbol(string(sym)*"_"*string(ind_bus))
+        ind = findfirst(x->x==sym,collect(rhs(pgsol.powergrid).syms))
+        t = pgsol.dqsol.t
+        y =  pgsol.dqsol[ind,:]./y_norm .+ y_bias
+        sc = PlotlyJS.scatter(x=t,y=y,name=String(sym))
+        push!(p,sc)
+    end
+    display(PlotlyJS.plot(p))
+    return p
+end
+
+
 function myplot(pgsol::Vector{PowerGridSolution},bus::String,sym::Symbol;y_norm=1.0,y_bias = 0.0)
     p = Vector{GenericTrace}()
     for i in pgsol
         tmp  =myplot(i,bus,sym,y_norm=y_norm,y_bias=y_bias)
         push!(p,tmp)
     end
-    #display(plot(p))
+    display(plot(p))
     return p
 end
 
-function plotv(pgsol,bus::String)
+function plotv(pgsol,bus::String;y_norm=1.0,y_bias = 0.0)
     ind = findfirst(x->x==bus,collect(keys(pgsol.powergrid.nodes)))
     ur = ExtractResult(pgsol,Symbol("u_r_"*string(ind)))
     ui = ExtractResult(pgsol,Symbol("u_i_"*string(ind)))
     t = pgsol.dqsol.t
-    y =  sqrt.(ur.^2 + ui.^2)
-    sc = scatter(x=t,y=y,name=bus)
+    y =  sqrt.(ur.^2 + ui.^2)./y_norm .+ y_bias
+    sc = PlotlyJS.scatter(x=t,y=y,name=bus)
+    display(PlotlyJS.plot(sc))
     return sc
 end
 
@@ -399,6 +435,7 @@ function plotv(pgsol,bus::Vector{String})
         tmp = plotv(pgsol,val)
         push!(p,tmp)
     end
+    display(plot(p))
     return p
 end
 
@@ -408,6 +445,7 @@ function plotv(pgsol::Vector{PowerGridSolution},bus::String)
         tmp  = plotv(i,bus)
         push!(p,tmp)
     end
+    display(plot(p))
     return p
 end
 
@@ -520,4 +558,166 @@ function CompareXRResults(obj::Array{String})
         push!(sc,tmp_sc)
     end
     display(plot(sc))
+end
+
+function CardanosFormular(A::Float64,B::Float64,C::Float64,D::Float64)
+    p = (9*A*C-3*B^2)./(9*A^2);
+    q = (2*B^3 -9*A*B*C + 27*D*A^2)./(27*A^3)
+    delta = (q/2)^2 +  (p/3)^3
+
+    roots_ = -1.0
+    if delta >0
+        #display("a")
+        u = Complex((-q/2+sqrt(delta)+0im)^(1/3))
+        v = Complex((-q/2-sqrt(delta)+0im)^(1/3))
+        x1 = u+v- B/(3*A) 
+        x2 = -(u+v)/2 - B/(3*A) + 1im*(u-v)/2*sqrt(3)
+        x3 = -(u+v)/2 - B/(3*A) - 1im*(u-v)/2*sqrt(3)
+        roots_ = real(x1) #auch nur das wird in PowerFactory genommen
+        if roots_ > 0.005
+            roots_= -0.00001
+        end
+        #display(roots_)
+    elseif delta == 0 && p == 0
+        #display("b")
+        x2 = - B/(3*A)
+        roots_ = real(x2)
+        #display(roots_)
+    elseif delta == 0 && p != 0
+        #display("c")
+        x1 = 3*q/p- B/(3*A)
+        x23 = -3*q/(2*p)- B/(3*A)
+        roots_ = real(x23)
+        #display(roots_)
+    elseif delta < 0
+        #display("d")
+        x1 = -sqrt(-4/3*p).*cos(1/3.0*acos(-q/2.0*sqrt(-27.0/(p.^3)))+pi/3)-B/(3*A)
+        x2 =  sqrt(-4/3*p).*cos(1/3.0*acos(-q/2.0*sqrt(-27.0/(p.^3))))     -B./(3*A)
+        x3 = -sqrt(-4/3*p).*cos(1/3.0*acos(-q/2.0*sqrt(-27.0/(p.^3)))-pi/3)-B./(3*A)
+        roots_ =  real(x1)
+        if roots_ > 0.005
+            roots_= -0.00001
+        end
+        #display(roots_)
+    end
+    roots_
+end
+
+function CardanosFormular(A,B,C,D)
+    p = (9*A*C-3*B^2)./(9*A^2);
+    q = (2*B^3 -9*A*B*C + 27*D*A^2)./(27*A^3)
+    delta = (q/2)^2 +  (p/3)^3
+
+    roots_ = -0.00001
+    if delta >0
+        u = Complex((-q/2+sqrt(delta)+0im)^(1/3))
+        v = Complex((-q/2-sqrt(delta)+0im)^(1/3))
+        x1 = u+v- B/(3*A) 
+        x2 = -(u+v)/2 - B/(3*A) + 1im*(u-v)/2*sqrt(3)
+        x3 = -(u+v)/2 - B/(3*A) - 1im*(u-v)/2*sqrt(3)
+        roots_ = real(x1) #auch nur das wird in PowerFactory genommen
+        if roots_ > 0.005
+            roots_= -0.00001
+        end
+    elseif delta == 0 && p == 0
+        x2 = - B/(3*A)
+        roots_ = real(x2)
+    elseif delta == 0 && p != 0
+        x1 = 3*q/p- B/(3*A)
+        x23 = -3*q/(2*p)- B/(3*A)
+        roots_ = real(x23)
+    elseif delta < 0
+        x1 = -sqrt(-4/3*p).*cos(1/3.0*acos(-q/2.0*sqrt(-27.0/(p.^3)))+pi/3)-B/(3*A)
+        x2 =  sqrt(-4/3*p).*cos(1/3.0*acos(-q/2.0*sqrt(-27.0/(p.^3))))     -B./(3*A)
+        x3 = -sqrt(-4/3*p).*cos(1/3.0*acos(-q/2.0*sqrt(-27.0/(p.^3)))-pi/3)-B./(3*A)
+        roots_ =  real(x1)
+        if roots_ > 0.005
+            roots_= -0.00001
+        end
+    end
+    roots_
+end
+
+
+function CalcnPFCtoff(V0::Float64,Pdc::Float64,Cd::Float64;ω0=100*pi,t=-1.0)
+    if 2*Pdc/(ω0*Cd*V0^2) > 1.0
+        toff =  0.01
+    else
+        toff = π/(2*ω0) + asin(2*Pdc/(ω0*Cd*V0^2))/(2*ω0)
+    end
+    return toff
+end
+
+function CalcnPFCtoff(V0,Pdc,Cd;ω0=100*pi)
+    if 2*Pdc/(ω0*Cd*V0^2) > 1.0
+        toff =  0.01
+    else
+        toff = π/(2*ω0) + asin(2*Pdc/(ω0*Cd*V0^2))/(2*ω0)
+    end
+    return toff
+end
+
+function CalfnPFCVoffT2(Voff::Float64,Pdc::Float64,Cd::Float64,dt::Float64)
+    VoffT2 = max(real(sqrt(Complex(Voff^2 - 2*Pdc*(dt)/Cd))))
+end
+
+function CalfnPFCVoffT2(Voff,Pdc,Cd,dt)
+    VoffT2 = max(real(sqrt(Complex(Voff^2 - 2*Pdc*(dt)/Cd))))
+end
+
+function CalfnPFCton(V0::Float64,Pdc::Float64,Cd::Float64,VoffT2::Float64;ω0=100*pi)    
+    x1 = 0.004517042542168
+    x2 = -0.084973441092720
+    x3 =  1.367157627046003
+    x4 = -0.580239811988436
+
+    A = V0^2*ω0^3*x4
+    B = V0^2*ω0^2*x3
+    C = V0^2*ω0*x2 + 2*Pdc/Cd
+    D = V0^2*x1 - VoffT2^2  
+
+    ton = CardanosFormular(A,B,C,D)
+end
+
+function CalfnPFCton(V0,Pdc,Cd,VoffT2;ω0=100*pi)    
+    x1 = 0.004517042542168
+    x2 = -0.084973441092720
+    x3 =  1.367157627046003
+    x4 = -0.580239811988436
+
+    A = V0^2*ω0^3*x4
+    B = V0^2*ω0^2*x3
+    C = V0^2*ω0*x2 + 2*Pdc/Cd
+    D = V0^2*x1 - VoffT2^2  
+
+    ton = CardanosFormular(A,B,C,D)
+end
+
+function CalcnPFCP1Q1(V0::Float64,Pdc::Float64,Cd::Float64,ton::Float64,toff::Float64;ω0=100*pi,T=0.02)
+    tmp1_a1 = V0*(1/2)*ω0*Cd*(toff-ton+1/(2*ω0)*(sin(2*ω0*toff)-sin(2*ω0*ton)))
+    tmp2_a1 = Pdc/(V0*ω0)*(log(abs(sin(ω0*toff)))-log(abs(sin(ω0*ton))))
+    a1 = 4/T*(tmp1_a1+tmp2_a1)
+
+    tmp1_b1 = V0*(1/4)*Cd*(cos(2*ω0*ton)-cos(2*ω0*toff))
+    tmp2_b1 = Pdc/V0*(toff-ton)
+    b1 = 4/T*(tmp1_b1+tmp2_b1)
+
+    q1 = a1*V0/2  # positive = capacitive reactive power (for PowerDynamics)
+    p1 = -b1*V0/2 # negative = load active power (for PowerDynamics)
+
+    return p1, q1
+end
+
+function CalcnPFCPower(V0::Float64,Pdc::Float64,Cd::Float64;ω0=100*pi,T=0.02,init=false)
+    toff = CalcnPFCtoff(V0,Pdc,Cd)
+    voff = V0*sin(ω0*toff)
+    VoffT2 = CalfnPFCVoffT2(voff,Pdc,Cd,(T/2-toff))
+    ton = CalfnPFCton(V0,Pdc,Cd,VoffT2)  
+    p1,q1 = CalcnPFCP1Q1(V0,Pdc,Cd,ton,toff)
+
+    if init
+        [VoffT2, ton, toff, p1, q1]
+    else
+        return [p1, q1]
+    end
 end

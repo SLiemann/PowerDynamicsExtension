@@ -60,6 +60,7 @@ end
 # NodeTypes: 0 = Slack, 1 = PV, 2 = PQ
 NodeType(S::SlackAlgebraic) = 0
 NodeType(S::SlackAlgebraicParam) = 0
+NodeType(S::droopIsland) = 0
 NodeType(F::SixOrderMarconatoMachine)  = 1
 NodeType(F::SixOrderMarconatoMachineAVROEL)  = 1
 NodeType(F::FourthOrderEq)  = 1
@@ -78,7 +79,6 @@ NodeType(L::CSIMinimal)  = 2
 NodeType(L::SimpleRecoveryLoad)  = 2
 NodeType(L::SimpleRecoveryLoadParam)  = 2
 NodeType(L::GridSideConverter) = 1
-NodeType(L::oPFC) = 2
 NodeType(
     L::Union{
         GridFormingConverter,
@@ -90,10 +90,12 @@ NodeType(
 ) = 1
 NodeType(L::Union{MatchingControl,MatchingControlRed}) = 1
 NodeType(L::dVOC) = 1
-NodeType(L::droop) = 1
+NodeType(L::Union{droop,droopvq,droopTS}) = 1
 NodeType(L::VSM) = 1
 NodeType(L::Union{gentpj,gentpjAVROEL}) = 1
-NodeType(L::GeneralVoltageDependentLoad) = 2
+NodeType(L::Union{GeneralVoltageDependentLoad,GeneralVoltageDependentLoadParam}) = 2
+NodeType(L::WeccPeLoad) = 2
+NodeType(L::nPFC) = 2
 NodeType(L::Union{ThreePhaseFault,ThreePhaseFaultContinouos}) = 2
 
 #note: only loads are treated with voltage depency and are called every iteration
@@ -107,7 +109,6 @@ NodePower(L::ExponentialRecoveryLoad,U)  = (L.P0*((abs(U)/L.V0)^L.Nps) + 1im*L.Q
 NodePower(L::CSIMinimal,U)  = -U*conj(L.I_r)
 NodePower(L::SimpleRecoveryLoad,U)  = L.P0 + 1im*(L.Q0)
 NodePower(L::SimpleRecoveryLoadParam,U)  = L.P0 + 1im*(L.Q0)
-NodePower(L::oPFC,U) = L.Pdc +1im*L.Qn/(U^0.9)
 function NodePower(L::GridSideConverter,U)
     if L.mode == 1
         return complex(0, -L.q_ref)
@@ -132,12 +133,31 @@ function NodePower(L::Union{ThreePhaseFault,ThreePhaseFaultContinouos},U)
     Y_n = 1.0 / (L.rfault + 1im * L.xfault)
    return -conj(Y_n*U)*U*0
 end
-function NodePower(L::GeneralVoltageDependentLoad,U)
+function NodePower(L::Union{GeneralVoltageDependentLoad,GeneralVoltageDependentLoadParam},U)
     u_rel = abs(U)/L.U
     Pv = L.P * (L.Ap * u_rel^2 + L.Bp * u_rel + 1.0 - L.Ap - L.Bp)
     Qv = L.Q * (L.Aq * u_rel^2 + L.Bq * u_rel + 1.0 - L.Aq -L. Bq)
     return complex(Pv,Qv)
 end
+function NodePower(L::WeccPeLoad,U)
+    if abs(U) > L.Vd1    
+        return  complex(L.P,L.Q)
+    elseif L.Vd2 <= abs(U)  <= L.Vd1
+        frac = (abs(U)-L.Vd2)/(L.Vd1 - L.Vd2)
+        return frac*complex(L.P,L.Q)
+    else
+        return 0.0
+    end
+end
+
+function NodePower(L::nPFC,U)
+    p,q = CalcnPFCPower(abs(U)*sqrt(2),L.Pdc,L.Cd)
+    q_off = L.q_offset * abs(U)^2 
+    poff =  L.p_offset * abs(U)
+    return complex(p+poff,q+q_off)
+end
+
+
 NodePower(S::SlackAlgebraic,U) = 0.
 NodePower(S::SlackAlgebraicParam,U) = 0.
 NodePower(F::SixOrderMarconatoMachine,U) = F.P
@@ -162,7 +182,7 @@ NodePower(M::Union{MatchingControl,MatchingControlRed},U) = M.p0set
 NodePower(V::dVOC,U) = V.p0set
 NodePower(V::VSM,U) = V.p0set
 NodePower(V::Union{gentpj,gentpjAVROEL},U) = V.P
-function NodePower(V::droop,U) 
+function NodePower(V::Union{droop,droopvq,droopIsland,droopTS},U)  
     if V.p0set/abs(U) > V.imax_csa
         return V.p0set #V.imax_csa*abs(U) #voltage dependent power injection
     else
@@ -170,7 +190,7 @@ function NodePower(V::droop,U)
     end
 end
 
-function PowerFlowClassic(pg::PowerGrid; ind_sl::Int64 = 0,max_tol::Float64 = 1e-7,iter_max::Int64  = 30,iwamoto::Bool =false, Qmax = -1, Qmin = -1, Qlimit_iter_check::Int64 = 3,Ustart = -1, δstart = -1)
+function PowerFlowClassic(pg::PowerGrid; ind_sl::Int64 = 1,max_tol::Float64 = 1e-7,iter_max::Int64  = 30,iwamoto::Bool =false, Qmax = -1, Qmin = -1, Qlimit_iter_check::Int64 = 3,Ustart = -1, δstart = -1)
     number_nodes = length(pg.nodes); #convenience 
     nodetypes = NodeType.(values(pg.nodes))
     if !isempty(findall(x-> x==0, nodetypes)) #if there is no SlackAlgebraic
@@ -247,7 +267,7 @@ function PowerFlowClassic(pg::PowerGrid; ind_sl::Int64 = 0,max_tol::Float64 = 1e
         #With Iwamoto mulipliers the load flow is more robust, but slower
         if iwamoto
             iwa = CalcIwamotoMultiplier(J,res,ΔP,ΔQ,Ykk,ind_sl,ind_PV,ind_PQ,number_nodes);
-            println(iwa)
+            #println(iwa)
             res *= iwa
         end
 
@@ -481,6 +501,27 @@ function GetInitialVoltages(pg::PowerGrid, ind_sl::Int64,number_nodes::Int64)
 
     if droop ∈ collect(values(pg.nodes)) .|> typeof
         pv = findall(collect(values(pg.nodes).|> typeof).== droop)
+        for i in pv
+            U[i] = collect(values(pg.nodes))[i].u0set
+        end
+    end
+
+    if droopTS ∈ collect(values(pg.nodes)) .|> typeof
+        pv = findall(collect(values(pg.nodes).|> typeof).== droopTS)
+        for i in pv
+            U[i] = collect(values(pg.nodes))[i].u0set
+        end
+    end
+
+    if droopvq ∈ collect(values(pg.nodes)) .|> typeof
+        pv = findall(collect(values(pg.nodes).|> typeof).== droopvq)
+        for i in pv
+            U[i] = collect(values(pg.nodes))[i].u0set
+        end
+    end
+
+    if droopIsland ∈ collect(values(pg.nodes)) .|> typeof
+        pv = findall(collect(values(pg.nodes).|> typeof).== droopIsland)
         for i in pv
             U[i] = collect(values(pg.nodes))[i].u0set
         end

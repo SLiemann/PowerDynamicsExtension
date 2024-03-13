@@ -401,26 +401,6 @@ function InitNode(GFC::Union{GridFormingConverter,GridFormingConverterParam,Grid
    end
 end
 
-function InitNode(PE::oPFC,ind::Int64,I_c::Vector{Complex{Float64}},ic_lf::Array{Float64,1},ind_offset::Int64)
-   v_d_temp = ic_lf[ind_offset]
-   v_q_temp = ic_lf[ind_offset+1]
-   U = v_d_temp+1im*v_q_temp
-   s = U * conj(I_c[ind]) #/ (GFC.Srated/GFC.Sbase)
-   q = imag(s)
-
-   oPFC_new = oPFC(
-      Cd = PE.Cd,
-      Pdc = PE.Pdc,
-      Ulow = PE.Ulow,
-      Qn = q*(abs(U)^0.9), #new
-      t0 = PE.t0,
-      ϵ = PE.ϵ,
-      p_ind = PE.p_ind,
-   )
-
-   return [v_d_temp, v_q_temp,abs(U),1.0,PE.Pdc,q,0.0,0.0], oPFC_new
-end
-
 function InitNode(MC::Union{MatchingControl,MatchingControlRed},ind::Int64,I_c::Vector{Complex{Float64}},ic_lf::Array{Float64,1},ind_offset::Int64)
    v_d_temp = ic_lf[ind_offset]
    v_q_temp = ic_lf[ind_offset+1]
@@ -595,7 +575,7 @@ function InitNode(VOC::dVOC,ind::Int64,I_c::Vector{Complex{Float64}},ic_lf::Arra
     return [v_d_temp, v_q_temp,θ,udc,idc0,vd_int,e_ud,e_uq,e_id,e_iq,p,q,dP,abs(i1),0.0,0.0], VOC_new #,idmeas,iqmeas,id,iq
 end
 
-function InitNode(DR::droop,ind::Int64,I_c::Vector{Complex{Float64}},ic_lf::Array{Float64,1},ind_offset::Int64)
+function InitNode(DR::Union{droop,droopTS,droopvq,droopIsland},ind::Int64,I_c::Vector{Complex{Float64}},ic_lf::Array{Float64,1},ind_offset::Int64)
    v_d_temp = ic_lf[ind_offset]
    v_q_temp = ic_lf[ind_offset+1]
    U0 = v_d_temp+1im*v_q_temp
@@ -621,7 +601,7 @@ function InitNode(DR::droop,ind::Int64,I_c::Vector{Complex{Float64}},ic_lf::Arra
    Q_before = imag(conj(i1) * E)
    dP =  P_before - p
    idc0 = DR.gdc + DR.p0set/ (DR.Srated/DR.Sbase)  + dP
-   p0_new = idc0 - DR.gdc - dP
+   p0_new = p# idc0 - DR.gdc - dP
    udc = 0.0 #ist hier nur das delta
 
    U0 = U0*(cos(-θ)+1im*sin(-θ))
@@ -638,33 +618,114 @@ function InitNode(DR::droop,ind::Int64,I_c::Vector{Complex{Float64}},ic_lf::Arra
    e_ud = (id - idmeas + uqmeas / DR.xcf)#/ DR.Ki_u #hier müsste es ohne idmeas und iqmeas sein
    e_uq = (iq - iqmeas - udmeas / DR.xcf) #/ DR.Ki_u #passt das überhaupt mit dem Srated/Sbase???
 
-   droop_new = droop(
-          Sbase = DR.Sbase,
-          Srated = DR.Srated,
-          p0set = p0_new, #new
-          u0set = DR.u0set,
-          Kp_droop = DR.Kp_droop,
-          Kp_uset = DR.Kp_uset,
-          Ki_uset = DR.Ki_uset,
-          Kdc = DR.Kdc,
-          gdc = DR.gdc,
-          cdc = DR.cdc,
-          xlf = DR.xlf,
-          rf = DR.rf,
-          xcf =  DR.xcf,
-          Tdc = DR.Tdc,
-          Kp_u = DR.Kp_u,
-          Ki_u = DR.Ki_u,
-          Kp_i = DR.Kp_i,
-          Ki_i = DR.Ki_i,
-          imax_csa = DR.imax_csa,
-          imax_dc = DR.imax_dc,
-          p_red = DR.p_red,
-          LVRT_on = DR.LVRT_on,
-          p_ind = DR.p_ind,
-          )
 
-    return [v_d_temp, v_q_temp,θ,udc,idc0,abs(U0),e_ud,e_uq,e_id,e_iq,p,dP,abs(i1),abs(i1),0.0], droop_new #,idc0,abs(E0),P_before,Q_before,p,q
+   if typeof(DR) == droopvq
+      droop_new = droopvq(
+         Sbase = DR.Sbase,
+         Srated = DR.Srated,
+         p0set = p0_new, #new
+         u0set = DR.u0set,
+         Kp_droop = DR.Kp_droop,
+         Kp_uset = DR.Kp_uset,
+         Ki_uset = DR.Ki_uset,
+         Kdc = DR.Kdc,
+         gdc = DR.gdc,
+         cdc = DR.cdc,
+         xlf = DR.xlf,
+         rf = DR.rf,
+         xcf =  DR.xcf,
+         Tdc = DR.Tdc,
+         Kp_u = DR.Kp_u,
+         Ki_u = DR.Ki_u,
+         Kp_i = DR.Kp_i,
+         Ki_i = DR.Ki_i,
+         imax_csa = DR.imax_csa,
+         imax_dc = DR.imax_dc,
+         p_red = DR.p_red,
+         LVRT_on = DR.LVRT_on,
+         p_ind = DR.p_ind,
+         )
+   elseif   typeof(DR) == droopIsland
+      droop_new = droopIsland(
+         Sbase = DR.Sbase,
+         Srated = DR.Srated,
+         p0set = p0_new, #new
+         u0set = DR.u0set,
+         Kp_droop = DR.Kp_droop,
+         Kp_uset = DR.Kp_uset,
+         Ki_uset = DR.Ki_uset,
+         Kdc = DR.Kdc,
+         gdc = DR.gdc,
+         cdc = DR.cdc,
+         xlf = DR.xlf,
+         rf = DR.rf,
+         xcf =  DR.xcf,
+         Tdc = DR.Tdc,
+         Kp_u = DR.Kp_u,
+         Ki_u = DR.Ki_u,
+         Kp_i = DR.Kp_i,
+         Ki_i = DR.Ki_i,
+         imax_csa = DR.imax_csa,
+         imax_dc = DR.imax_dc,
+         p_red = DR.p_red,
+         LVRT_on = DR.LVRT_on,
+         p_ind = DR.p_ind,
+         )
+   elseif typeof(DR) == droopTS
+      droop_new = droopTS(
+            Sbase = DR.Sbase,
+            Srated = DR.Srated,
+            p0set = p0_new, #new
+            u0set = DR.u0set,
+            Kp_droop = DR.Kp_droop,
+            Kp_uset = DR.Kp_uset,
+            Ki_uset = DR.Ki_uset,
+            Kdc = DR.Kdc,
+            gdc = DR.gdc,
+            cdc = DR.cdc,
+            xlf = DR.xlf,
+            rf = DR.rf,
+            xcf =  DR.xcf,
+            Tdc = DR.Tdc,
+            Kp_u = DR.Kp_u,
+            Ki_u = DR.Ki_u,
+            Kp_i = DR.Kp_i,
+            Ki_i = DR.Ki_i,
+            imax_csa = DR.imax_csa,
+            imax_dc = DR.imax_dc,
+            LVRT_on = DR.LVRT_on,
+            p_ind = DR.p_ind,
+            )
+         return [v_d_temp, v_q_temp,θ,udc,idc0,abs(U0),e_ud,e_uq,e_id,e_iq,p,dP,abs(i1),abs(i1),0.0,q,p,0,0], droop_new
+   else 
+      droop_new = droop(
+            Sbase = DR.Sbase,
+            Srated = DR.Srated,
+            p0set = p0_new, #new
+            u0set = DR.u0set,
+            Kp_droop = DR.Kp_droop,
+            Kp_uset = DR.Kp_uset,
+            Ki_uset = DR.Ki_uset,
+            Kdc = DR.Kdc,
+            gdc = DR.gdc,
+            cdc = DR.cdc,
+            xlf = DR.xlf,
+            rf = DR.rf,
+            xcf =  DR.xcf,
+            Tdc = DR.Tdc,
+            Kp_u = DR.Kp_u,
+            Ki_u = DR.Ki_u,
+            Kp_i = DR.Kp_i,
+            Ki_i = DR.Ki_i,
+            imax_csa = DR.imax_csa,
+            imax_dc = DR.imax_dc,
+            p_red = DR.p_red,
+            LVRT_on = DR.LVRT_on,
+            p_ind = DR.p_ind,
+            )
+   end
+
+    return [v_d_temp, v_q_temp,θ,udc,idc0,abs(U0),e_ud,e_uq,e_id,e_iq,p,dP,abs(i1),abs(i1),0.0,q,p,0], droop_new #,idc0,abs(E0),P_before,Q_before,p,q
 end
 
 function InitNode(VSM0::VSM,ind::Int64,I_c::Vector{Complex{Float64}},ic_lf::Array{Float64,1},ind_offset::Int64)
@@ -856,7 +917,7 @@ function InitNode(GP::gentpjAVROEL,ind::Int64,I_c::Vector{Complex{Float64}},ic_l
    #calculate δ
    K_temp = (GP.X_q-GP.X_l)/(1 + S_q) + GP.X_l
    δ = atan((v_i_term+i_r*K_temp + GP.R_a *i_i)/(v_r_term - i_i*K_temp +GP.R_a *i_r))
-
+  
    #terminal voltage transformation to local dq-system
    v = v_r_term+1im*v_i_term
    v = 1im*v*exp(-1im*δ)
@@ -909,4 +970,57 @@ function InitNode(F::ThreePhaseFaultContinouos,ind::Int64,I_c::Vector{Complex{Fl
    v_d_temp = ic_lf[ind_offset]
    v_q_temp = ic_lf[ind_offset+1]
    return [v_d_temp, v_q_temp,F.rfault,F.xfault], F
+end
+
+function InitNode(L::Union{GeneralVoltageDependentLoad,GeneralVoltageDependentLoadParam},ind::Int64,I_c::Vector{Complex{Float64}},ic_lf::Array{Float64,1},ind_offset::Int64)
+   v_d_temp = ic_lf[ind_offset]
+   v_q_temp = ic_lf[ind_offset+1]
+
+   U0 = v_d_temp+1im*v_q_temp
+
+   s = U0 * conj(I_c[ind]) 
+   p = real(s)
+   q = imag(s)
+   return [v_d_temp, v_q_temp,p, q], L
+end
+
+function InitNode(L::WeccPeLoad,ind::Int64,I_c::Vector{Complex{Float64}},ic_lf::Array{Float64,1},ind_offset::Int64)
+   v_d_temp = ic_lf[ind_offset]
+   v_q_temp = ic_lf[ind_offset+1]
+
+   U = abs(v_d_temp+1im*v_q_temp)
+   U0 = v_d_temp+1im*v_q_temp
+
+   s = U0 * conj(I_c[ind]) 
+   p = real(s)
+   q = imag(s)
+   if U > L.Vd1    
+      p = L.P
+      q = L.Q
+   elseif L.Vd2 <= U  <= L.Vd1
+         frac = (U-L.Vd2)/(L.Vd1 - L.Vd2)
+         p = L.P*frac
+         q = L.Q*frac
+   end
+   return [v_d_temp, v_q_temp,p, q], L
+end
+
+function InitNode(L::nPFC,ind::Int64,I_c::Vector{Complex{Float64}},ic_lf::Array{Float64,1},ind_offset::Int64)
+   v_d_temp = ic_lf[ind_offset]
+   v_q_temp = ic_lf[ind_offset+1]
+
+   U0 = v_d_temp+1im*v_q_temp
+
+   s = U0 * conj(I_c[ind]) 
+   p = real(s)
+   q = imag(s)
+
+   U = abs(v_d_temp+1im*v_q_temp)
+   VoffT2, ton, toff, p1, q1 = CalcnPFCPower(U*sqrt(2),L.Pdc,L.Cd,init=true)
+   qoff = (q-q1)/(U^2)
+   poff = (p-p1)/(U)
+   vabstoff = abs(U0)*sqrt(2)*sin(100*pi*toff)
+   node_temp = nPFC(Cd=L.Cd,Pdc=L.Pdc,p_offset=poff,q_offset=L.q_offset,p_ind=L.p_ind)
+   #node_temp = nPFC(Cd=L.Cd,Pdc=L.Pdc,p_offset=poff,q_offset=qoff,p_ind=L.p_ind)
+   return [v_d_temp, v_q_temp,VoffT2, ton, toff, p1, q1,vabstoff ,1.0, p1, q1], node_temp
 end

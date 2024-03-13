@@ -1,5 +1,5 @@
 @DynamicNode droop(Sbase,Srated,p0set,u0set,Kp_droop,Kp_uset,Ki_uset,Kdc,gdc,cdc,xlf,rf,xcf,Tdc,Kp_u,Ki_u,Kp_i,Ki_i,imax_csa,imax_dc,p_red,LVRT_on,p_ind) begin
-    MassMatrix(m_int =[true,true,true,true,true,true,true,true,true,true,false,false,true])#,false,false,false,false
+    MassMatrix(m_int =[true,true,true,true,true,true,true,true,true,true,false,false,true,false,false,true])#,false,false,false,false
 end begin
     @assert Sbase > 0 "Base apparent power of the grid in VA, should be >0"
     @assert Srated > 0 "Rated apperent power of the machine in VA, should be >0"
@@ -23,7 +23,7 @@ end begin
     @assert imax_dc >= 0 "max. current of dc source in p.u., should be >=0"
     @assert p_red == 0 || p_red == 1 "Boolean value vor activating or deactivating power reduction in case of limited current"
 
-end [[θ,dθ],[udc,dudc],[idc0,didc0],[x_uabs,dx_uabs],[e_ud,de_ud],[e_uq,de_uq],[e_id,de_id],[e_iq,de_iq],[Pf,dPf],[Pdelta,dPdelta],[i_abs,di_abs],[iset_abs,diset_abs],[LVRT,dLVRT]] begin #,[idc0_lim,didc0_lim],[Um,dUm],[Ps,dPs],[Qs,dQs],[Q0,dQ0],[P0,dP0]
+end [[θ,dθ],[udc,dudc],[idc0,didc0],[x_uabs,dx_uabs],[e_ud,de_ud],[e_uq,de_uq],[e_id,de_id],[e_iq,de_iq],[Pf,dPf],[Pdelta,dPdelta],[i_abs,di_abs],[iset_abs,diset_abs],[LVRT,dLVRT],[Q0,dQ0],[P0,dP0],[ω0,dω0]] begin #,[idc0_lim,didc0_lim],[Um,dUm],[Ps,dPs],[Qs,dQs]
     p0set = p[p_ind[1]]    
     u0set = p[p_ind[2]]
     Kp_droop = p[p_ind[3]]
@@ -67,9 +67,12 @@ end [[θ,dθ],[udc,dudc],[idc0,didc0],[x_uabs,dx_uabs],[e_ud,de_ud],[e_uq,de_uq]
     q_before_filter = imag(conj(idq) * E)
     ix  = p_before_filter   #AC/DC coupling
 
+    #filtered power
+    dPf = 10.0*pi*(pmeas - Pf)
+
     #Voltage control
     Δuabs = u0set - abs(u)
-    dx_uabs = Ki_uset * Δuabs
+    #dx_uabs = Ki_uset * Δuabs
     Uset = x_uabs + Kp_uset * Δuabs
 
     #Building voltage reference
@@ -77,8 +80,8 @@ end [[θ,dθ],[udc,dudc],[idc0,didc0],[x_uabs,dx_uabs],[e_ud,de_ud],[e_uq,de_uq]
     uqset = 0.0
 
     #Voltage control
-    de_ud = (udset - udmeas) * Ki_u
-    de_uq = (uqset - uqmeas) * Ki_u
+    #de_ud = (udset - udmeas) * Ki_u
+    #de_uq = (uqset - uqmeas) * Ki_u
 
     idset = idmeas - uqmeas / xcf + Kp_u * (udset - udmeas) + e_ud
     iqset = iqmeas + udmeas / xcf + Kp_u * (uqset - uqmeas) + e_uq
@@ -91,7 +94,7 @@ end [[θ,dθ],[udc,dudc],[idc0,didc0],[x_uabs,dx_uabs],[e_ud,de_ud],[e_uq,de_uq]
     iqset_csa = iset_lim*sin(ϕ1)
 
     #experimentell
-    anti_windup = IfElse.ifelse(iset_abs >= imax_csa && p_red>0,true,false)
+    anti_windup = IfElse.ifelse(iset_abs >= imax_csa && p_red > 0,true,false)
     de_ud = IfElse.ifelse(anti_windup,0.0, (udset - udmeas) * Ki_u)
     de_uq = IfElse.ifelse(anti_windup,0.0, (uqset - uqmeas) * Ki_u)
 
@@ -128,13 +131,18 @@ end [[θ,dθ],[udc,dudc],[idc0,didc0],[x_uabs,dx_uabs],[e_ud,de_ud],[e_uq,de_uq]
 
     di_abs = i_abs - I_abs
 
-    dx_uabs = IfElse.ifelse(iset_abs >= imax_csa && p_red > 0,0.0,Ki_uset * Δuabs)
+    dx_uabs = IfElse.ifelse(iset_abs >= imax_csa && p_red > 0 ,0.0,Ki_uset * Δuabs)#&& abs(u) < 0.9
    
     #Pref reduction
-    plim = idset_csa * real(u) + iqset_csa * imag(u)
-    pmax = IfElse.ifelse(plim > p0set, p0set, IfElse.ifelse(plim < -p0set, -p0set, plim))
+    plim = idset_csa * udmeas + iqset_csa * uqmeas 
+    #pmax = IfElse.ifelse(plim > p0set, p0set, IfElse.ifelse(plim < -p0set, -p0set, plim))
+    pmax = IfElse.ifelse(plim > 1.0, 1.0 , IfElse.ifelse(plim < -1.0 , -1.0 , plim))
     #dP = IfElse.ifelse(iset_abs >= imax_csa,p_red*dpmax, 0.0)
-    dP = IfElse.ifelse(iset_abs >=  imax_csa && p_red > 0,p_red*(p0set -pmax), 0.0)
+    dP = IfElse.ifelse(iset_abs >=  imax_csa && p_red > 0 ,p_red*(p0set -pmax), 0.0) #&& abs(u)<0.9
+
+    w = (p0set - dP - Pf) * Kp_droop
+    dθ = w
+    dω0 = (w-ω0)/1e-3
 
     #DC current control
     dPdelta = 10.0*pi*(p_before_filter - pmeas - Pdelta)
@@ -146,16 +154,10 @@ end [[θ,dθ],[udc,dudc],[idc0,didc0],[x_uabs,dx_uabs],[e_ud,de_ud],[e_uq,de_uq]
     #DC circuit
     dudc = (idc0_lim - gdc * (1.0+udc) - ix) / cdc
 
-    #Droop control
-    #filtered power
-    dPf = 10.0*pi*(pmeas - Pf)
-    w = (p0set - dP - Pf) * Kp_droop
-    dθ = w
-
     #dPs = Ps - p_before_filter
     #dQs = Qs - q_before_filter
-    #dP0 = P0 - pmeas
-    #dQ0 = Q0 - qmeas
+    dP0 = P0 - pmeas
+    dQ0 = Q0 - qmeas
     #dUm = Um - abs(um)
     dLVRT = LVRT_on
 end
